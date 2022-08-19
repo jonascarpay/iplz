@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/release-22.05";
+    nixpkgs.url = "github:NixOS/nixpkgs";
     nixos-generators.url = "github:nix-community/nixos-generators";
     nixos-generators.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -10,57 +10,82 @@
       system = "x86_64-linux";
       pkgs = import inputs.nixpkgs { inherit system; };
 
-      iplz_config = {
-        documentation.man.enable = false;
+      # Step 1. Write application
+      iplz-lib = pkgs.python3Packages.buildPythonPackage {
+        name = "iplz";
+        src = ./app;
+        propagatedBuildInputs = [ pkgs.python3Packages.falcon ];
+      };
+
+      iplz-server = pkgs.writeShellApplication {
+        name = "iplz-server";
+        runtimeInputs = [ (pkgs.python3.withPackages (p: [ p.uvicorn iplz-lib ])) ];
+        text = ''
+          uvicorn iplz:app "$@"
+        '';
+      };
+
+      # Step 2: Define image
+      base-config = {
         system.stateVersion = "22.05";
         networking.firewall.allowedTCPPorts = [ 80 ];
-        services.nginx = {
+        systemd.services.iplz = {
           enable = true;
-          virtualHosts."iplz" = {
-            default = true;
-            serverName = null;
-            locations."/" = {
-              return = ''
-                200 $remote_addr\n
-              '';
-              extraConfig = ''
-                add_header Content-Type text/plain;
-              '';
-            };
+          wantedBy = [ "multi-user.target" ];
+          after = [ "network.target" ];
+          script = ''
+            ${iplz-server}/bin/iplz-server --host 0.0.0.0 --port 80
+          '';
+          serviceConfig = {
+            Restart = "always";
+            Type = "simple";
           };
         };
-        users.mutableUsers = false;
-        users.users.root.openssh.authorizedKeys.keys = [
-          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK0HDZvHZMdLOIFTrLF4UhSS4iwmsT3b3oBzWkWVHrNg"
-        ];
-        services.openssh = {
-          enable = true;
-          permitRootLogin = "prohibit-password";
-        };
       };
+
+      iplz-vm = inputs.nixos-generators.nixosGenerate {
+        inherit pkgs;
+        format = "vm";
+        modules = [
+          base-config
+          {
+            services.getty.autologinUser = "root";
+            virtualisation.forwardPorts = [{ from = "host"; host.port = 8000; guest.port = 80; }];
+          }
+        ];
+      };
+
+      # Step 3: Deploy
+      image-name = "iplz-${system}";
+      iplz-ec2-img = inputs.nixos-generators.nixosGenerate {
+        inherit pkgs;
+        format = "amazon";
+        modules = [
+          base-config
+          { amazonImage.name = image-name; }
+        ];
+      };
+      iplz-img-path = "${iplz-ec2-img}/${image-name}.vhd";
+
+      deploy-shell = pkgs.mkShell {
+        packages = [ pkgs.terraform ];
+        TF_VAR_iplz_img_path = iplz-img-path;
+      };
+
+      terraform = pkgs.writeShellScriptBin "terraform" ''
+        export TF_VAR_iplz_img_path="${iplz-img-path}"
+        ${pkgs.terraform}/bin/terraform $@
+      '';
 
     in
     {
       packages.${system} = {
-        iplz-qemu = inputs.nixos-generators.nixosGenerate {
-          inherit pkgs;
-          format = "vm";
-          modules = [
-            iplz_config
-            { virtualisation.forwardPorts = [{ from = "host"; host.port = 8000; guest.port = 80; }]; }
-          ];
-        };
-        iplz-ami = inputs.nixos-generators.nixosGenerate {
-          inherit pkgs;
-          format = "amazon";
-          modules = [ iplz_config ];
-        };
+        inherit
+          iplz-server
+          iplz-vm
+          iplz-ec2-img
+          terraform;
       };
-      devShell.${system} = pkgs.mkShell {
-        packages = [
-          pkgs.terraform
-          pkgs.awscli2
-        ];
-      };
+      devShell.${system} = deploy-shell;
     };
 }
