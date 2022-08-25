@@ -11,8 +11,8 @@ provider "aws" {
   region = "us-west-2"
 }
 
-variable "iplz_img_path" {
-  description = "Path to the server image."
+variable "bootstrap_img_path" {
+  description = "Path to the server bootstrap image."
   type        = string
 }
 
@@ -24,9 +24,31 @@ resource "aws_instance" "iplz_server" {
   ami                    = aws_ami.iplz_ami.id
   instance_type          = "t2.micro"
   vpc_security_group_ids = [aws_security_group.iplz_security_group.id]
+
+  provisioner "remote-exec" {
+    connection {
+      host = self.public_ip
+      private_key = file("~/.ssh/id_ed25519")
+    }
+    inline = [ "echo 'SSH confirmed!'" ]
+  }
+
+  provisioner "local-exec" {
+    command = "ssh-keyscan ${self.public_ip} >> ~/.ssh/known_hosts"
+  }
+
+  lifecycle {
+    ignore_changes = all
+  }
 }
 
 resource "aws_security_group" "iplz_security_group" {
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
   ingress {
     from_port   = 80
     to_port     = 80
@@ -54,8 +76,8 @@ resource "aws_s3_bucket_acl" "iplz_acl" {
 
 resource "aws_s3_object" "image_upload" {
   bucket = aws_s3_bucket.iplz_bucket.id
-  key    = "iplz.vhd"
-  source = var.iplz_img_path
+  key    = "nixos_bootstrap.vhd"
+  source = var.bootstrap_img_path
 }
 
 resource "aws_ebs_snapshot_import" "iplz_import" {
@@ -127,4 +149,25 @@ resource "aws_iam_policy" "vmimport_policy" {
       }
     ]
   })
+}
+
+variable "live_config_path" {
+  type        = string
+  description = "Path to the live NixOS config we want to deploy"
+}
+
+resource "null_resource" "nixos_deployment" {
+  triggers = {
+    live_config_path = var.live_config_path
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      nix-copy-closure $TARGET ${var.live_config_path}
+      ssh $TARGET '${var.live_config_path}/bin/switch-to-configuration switch && nix-collect-garbage'
+      EOT
+    environment = {
+      TARGET = "root@${aws_instance.iplz_server.public_ip}"
+    }
+  }
 }
