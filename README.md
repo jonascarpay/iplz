@@ -3,7 +3,7 @@
 _End-to-end declarative deployment_ means having a set of files describing the desired end state of the entire production pipeline, in such a way that we can materialize it with _a single command_.
 In this case, that pipeline consists of building, provisioning, and deploying a simple web service to Amazon EC2.
 
-I describe the ideas and methods in detail in the [accompanying tutorial blog post](TODO).
+I describe the ideas and methods in detail in the [accompanying tutorial blog post](https://jonascarpay.com/posts/2022-09-19-declarative-deployment.html).
 
 The `iplz` application itself is a simple [`icanhazip.com`](http://icanhazip.com/) clone, it echoes the client's IP address back at them.
 It serves as a stand-in for a larger application, see the [binplz.dev repo](https://github.com/binplz/binplz.dev) for how the ideas presented here work in a more complex situation.
