@@ -59,6 +59,7 @@
             services.getty.autologinUser = "root";
             virtualisation.forwardPorts = [{ from = "host"; host.port = 8000; guest.port = 80; }];
           }
+          live-config-module
         ];
       };
 
